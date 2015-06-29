@@ -1,0 +1,144 @@
+Introduction to Go scheduler
+A comparison with Erlang/OTP SMP VM
+
+Isaiah Peng 彭丽群
+Ruby developer, Blacklane GmbH
+issaria@gmail.com
+@isaiah_peng
+
+* Disclaimer
+
+I have no idea what I am doing
+
+.image http://photos4.meetupstatic.com/photos/event/7/9/1/1/600_434910993.jpeg _ 300
+
+* Agenda
+
+- How it worked
+- How it works
+- Erlang/OTP SMP scheduler
+- NUMA-aware Go Scheduler
+
+* Go code is "single threaded" by default
+
+.play gomaxprocs.go /^func main/,/^}/
+
+*GOMAXPROCS* sets the maximum number of CPUs that can be executing simultaneously and returns the previous setting. If n < 1, it does not change the current setting. The number of logical CPUs on the local machine can be queried with NumCPU. _This_call_will_go_away_when_the_scheduler_ *improves*.
+
+* Two types of scheduler
+
+- Cooperative
+- Preemptive
+
+* How it worked (Go 1.0)
+
+.image img/original_scheduler.png _ 300
+.caption *M* for OS thread, *G* for goroutine
+
+# Get something working on Linux and OS X
+# Global run-queue, lots of lock contention
+
+# The slowdown for chained goroutine is *10X*
+
+#   In Go 1.0 the slowdown of GOMAXPROCS=2 vs GOMAXPROCS=1 was over 10x;
+#   by Go 1.1 it had been reduced to about 2x, where it has stayed through Go 1.4.
+#   Changes made in the Go 1.5 cycle have dropped the slowdown to under 1.1x (10%).
+
+# .caption _quote_ from [[https://docs.google.com/document/d/1At2Ls5_fhJQ59kDK2DFVhFu3g5mATSXqqV5QrxinasI][Go 1.5 GOMAXPROCS Default]]
+
+
+* How it works
+
+
+.link https://docs.google.com/document/d/1TTj4T2JO42uD5ID9e89oa0sLKhJYD0Y_kqxDv3I3XMw Scalable Go scheduler
+
+Go 1.1
+
+- Introduce of P (Processor)
+- Separate run-queue for P, job stealing
+
+Go 1.2
+
+- Preemption on function call
+
+# Preemption point: function call, receive from / send to channel, syscall (File IO), GC
+
+Scheduling policy:
+
+  new and unblocked goroutines go to local RunQ;
+  network poller injects work into global queue;
+  work stealing is completely random;
+  GC reshuffles goroutines to balance work.
+
+.caption _quote_ from [[https://docs.google.com/document/d/1d3iI2QWURgDIsSR6G2275vMeQ_X7w-qxM2Vp7iGwwuM][NUMA-aware Go scheduler]]
+
+* Architecture
+
+.image https://docs.google.com/drawings/image?id=s-p5KAjD9gncMx0exUchbvA&rev=95&h=504&w=624&ac=1
+.caption _architecture_ from [[https://docs.google.com/document/d/1d3iI2QWURgDIsSR6G2275vMeQ_X7w-qxM2Vp7iGwwuM][NUMA-aware Go scheduler]]
+
+* How it works (cont)
+
+.image https://morsmachine.dk/syscall.jpg
+.caption _graph_ by [[https://morsmachine.dk/go-scheduler][Morsing]]
+
+# so is cgo, when a thread is blocked waiting for cgo to complete for more than 20 us, a new thread is spawn to run new goroutines.
+
+* Blocking example
+
+.play jlouis.go /^const/,/^}/
+
+* Go 1.5
+
+Default `GOMAXPROCS` to `NumCPU`
+
+  Goroutine scheduling affinity and other improvements to the scheduler have
+  largely addressed the problem, by keeping goroutines that are concurrent 
+  but not parallel in the same thread.
+
+* Erlang/OTP SMP (Symmetrical MultiProcessing) VM
+
+First release in OTP R11B in May 2006
+# Go 1.0 is release on March 2012
+
+- [x] One scheduler per CPU core (default)
+- [x] Run-queue per scheduler
+- [ ] Processes are prioritized
+# Both processes and ports have a "reduction budget" of 2000 reductions. Any operation in the system costs reductions. This includes function calls in loops, calling built-in-functions (BIFs), garbage collecting heaps of that process[n1], storing/reading from ETS, sending messages (The size of the recipients mailbox counts, large mailboxes are more expensive to send to). This is quite pervasive, by the way. The Erlang regular expression library has been modified and instrumented even if it is written in C code. So when you have a long-running regular expression, you will be counted against it and preempted several times while it runs. Ports as well! Doing I/O on a port costs reductions, sending distributed messages has a cost, and so on. Much time has been spent to ensure that any kind of progress in the system has a reduction cost[n2].
+- [ ] BIFs are instrumented to do reduction counting
+- [ ] Truely preemptive (Erlang, not BIF/NIF), reduction counting
+- [ ] The cores can be bound to schedulers
+- [ ] Schedulers are waken up / suspended based on load.
+- [ ] File IO are handled by Async Threads pool
+- [ ] Process has it's own stack and heap
+
+* It's all about locality
+
+NUMA (Non-uniform memory access)
+
+.image https://docs.google.com/drawings/image?id=sMnlsy5g5hBr_W70jMZHC8Q&rev=62&h=231&w=436&ac=1
+
+* Future
+
+.image https://docs.google.com/drawings/image?id=s8qiQptIGYiMfA5QvfCDHDg&rev=107&h=429&w=422&ac=1
+.caption NUMA-aware Go scheduler
+
+  Ensure affinity throughout the stack: core <-> M <-> P <-> G and Memory
+  RunQ LIFO
+
+* References
+
+NUMA-aware scheduler for Go
+[[https://docs.google.com/document/d/1d3iI2QWURgDIsSR6G2275vMeQ_X7w-qxM2Vp7iGwwuM/pub]]
+Scalable Go Scheduler
+[[https://docs.google.com/document/d/1TTj4T2JO42uD5ID9e89oa0sLKhJYD0Y_kqxDv3I3XMw]]
+Go Scheduler
+[[https://morsmachine.dk/go-scheduler]]
+Go 1.5 GOMAXPROCS Default
+[[https://docs.google.com/document/d/1At2Ls5_fhJQ59kDK2DFVhFu3g5mATSXqqV5QrxinasI]]
+Inside the Erlang VM
+[[http://www.erlang.org/euc/08/euc_smp.pdf]]
+How Erlang does scheduling
+[[http://jlouisramblings.blogspot.de/2013/01/how-erlang-does-scheduling.html]]
+Understand the Erlang scheduler
+[[https://www.youtube.com/watch?v=tBAM_N9qPno]]
